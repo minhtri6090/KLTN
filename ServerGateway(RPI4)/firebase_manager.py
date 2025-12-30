@@ -35,7 +35,7 @@ class FirebaseManager:
         
         self.logger.info("Firebase initialized successfully")
 
-    def add_user(self, name: str, email: str) -> str:
+    def add_user(self, name:  str, email: str) -> str:
         """Add new user to Firebase"""
         user_id = str(uuid.uuid4())
         
@@ -108,7 +108,7 @@ class FirebaseManager:
         
         for i, path in enumerate(image_paths):
             if not os.path.exists(path):
-                self.logger.warning(f"Image not found: {path}")
+                self.logger.warning(f"Image not found:  {path}")
                 continue
             
             # Load image
@@ -117,7 +117,7 @@ class FirebaseManager:
             # Detect faces (try fast first, then boost)
             locs = face_recognition.face_locations(img, number_of_times_to_upsample=1, model="hog")
             
-            if not locs:
+            if not locs: 
                 locs = face_recognition.face_locations(img, number_of_times_to_upsample=2, model="hog")
             
             if not locs:  
@@ -189,3 +189,39 @@ class FirebaseManager:
                 self.face_id_to_user_map[face_id] = user_id
         
         self.logger.info(f"Loaded {len(self.known_face_encodings)} face encodings from {len(set(self.face_id_to_user_map.values()))} users")
+
+    def log_recognition(self, user_id: str, user_name: str, confidence: float, location: str = "RPi4"):
+        """Log face recognition event to Firebase"""
+        try: 
+            log_id = str(uuid.uuid4())
+            
+            self.db.reference(f"recognition_logs/{log_id}").set({
+                "user_id": user_id,
+                "user_name": user_name,
+                "confidence": confidence,
+                "location": location,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            self.logger.info(f"Recognition logged: {user_name} ({confidence:.2f}) at {location}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to log recognition: {e}")
+
+    def log_recording(self, filename: str, duration: float, size_mb: float, motion_events: int):
+        """Log recording event to Firebase"""
+        try:
+            log_id = str(uuid.uuid4())
+            
+            self.db.reference(f"recording_logs/{log_id}").set({
+                "filename": filename,
+                "duration": duration,
+                "size_mb": size_mb,
+                "motion_events": motion_events,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            self.logger.info(f"Recording logged: {filename} ({duration:.1f}s, {size_mb:.1f}MB)")
+            
+        except Exception as e: 
+            self.logger.error(f"Failed to log recording: {e}")

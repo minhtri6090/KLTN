@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-import cv2, json, time, queue, threading, logging
+import os, cv2, json, time, uuid, queue, threading, logging
 import numpy as np
 import face_recognition
 import paho.mqtt.client as mqtt
 from datetime import datetime
 from firebase_manager import FirebaseManager
-from typing import Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple
+from pathlib import Path
 
 cv2.setUseOptimized(True)
 cv2.setNumThreads(2)
@@ -25,7 +26,7 @@ class MQTTManager:
         
         try:
             self.client.max_queued_messages_set(10)
-        except Exception:  
+        except Exception: 
             pass
 
     def _on_connect(self, client, userdata, flags, rc):
@@ -33,9 +34,9 @@ class MQTTManager:
             self.connected = True
             self.logger.info("MQTT Connected")
             
-            # ? Subscribe to ESP32 motion detection
-            client.subscribe("security/esp32/motion", qos=1)
-            self.logger.info("Subscribed to ESP32 motion topic")
+            client.subscribe("security/camera/alert", qos=1)
+            client.subscribe("security/camera/status", qos=1)
+            self.logger.info("Subscribed to ESP32 topics")
         else:
             self.connected = False
             self.logger.error(f"MQTT Connection failed: RC={rc}")
@@ -52,16 +53,15 @@ class MQTTManager:
             self.logger.info(f"MQTT <- {topic}")
             self.logger.debug(f"   Payload: {payload}")
             
-            # ? Handle ESP32 motion detection
-            if topic == "security/esp32/motion":
-                if payload.get("state") == "detected":
-                    self.logger.info("?? Motion detected from ESP32 LD2410C")
+            if topic == "security/camera/alert":
+                if payload.get("event") == "motion_detected":
+                    self.logger.info("Motion detected signal from ESP32")
                     if self.on_motion_callback:
                         self.on_motion_callback()
                         
         except json.JSONDecodeError:
             self.logger.error(f"Failed to parse MQTT message: {msg.payload}")
-        except Exception as e:  
+        except Exception as e: 
             self.logger.error(f"Error handling MQTT message: {e}")
 
     def connect(self):
@@ -85,7 +85,7 @@ class MQTTManager:
             self.client.loop_stop()
             self.client.disconnect()
             self.logger.info("MQTT closed")
-        except Exception:  
+        except Exception: 
             pass
 
 class FrameReader(threading.Thread):
@@ -122,7 +122,7 @@ class FrameReader(threading.Thread):
             self.retry_count = 0
             return cap
             
-        except Exception as e:  
+        except Exception as e: 
             self.logger.error(f"Error opening stream: {e}")
             return None
 
@@ -135,14 +135,14 @@ class FrameReader(threading.Thread):
                 self.retry_count += 1
                 
                 if self.max_retries and self.retry_count > self.max_retries:
-                    self.logger.error("Max retries reached.Stopping.")
+                    self.logger.error("Max retries reached. Stopping.")
                     break
                 
                 self.logger.warning(f"Attempting reconnect #{self.retry_count}...")
                 self.cap = self._open_stream()
                 
                 if self.cap is None:
-                    self.logger.warning(f"Reconnect failed.Retry in {self.reconnect_delay}s")
+                    self.logger.warning(f"Reconnect failed. Retry in {self.reconnect_delay}s")
                     time.sleep(self.reconnect_delay)
                     continue
                 
@@ -154,7 +154,7 @@ class FrameReader(threading.Thread):
                 if not ok:
                     consecutive_fails += 1
                     
-                    if consecutive_fails >= max_consecutive_fails:  
+                    if consecutive_fails >= max_consecutive_fails: 
                         self.logger.warning("Too many consecutive failures.Reconnecting...")
                         if self.cap:
                             self.cap.release()
@@ -177,7 +177,7 @@ class FrameReader(threading.Thread):
                 except queue.Full:
                     pass
                     
-            except Exception as e:  
+            except Exception as e: 
                 self.logger.error(f"Error in frame read loop: {e}")
                 consecutive_fails += 1
                 time.sleep(0.1)
@@ -185,6 +185,135 @@ class FrameReader(threading.Thread):
         if self.cap:
             self.cap.release()
         self.logger.info("FrameReader stopped")
+
+    def stop(self):
+        self.running = False
+
+class MotionRecorder(threading.Thread):
+    def __init__(self, frame_queue, motion_signal, output_dir="/home/camera/recordings",
+                 pre_motion_buffer=30, post_motion_timeout=10, max_storage_gb=50, fb_manager=None):
+        super().__init__(daemon=True)
+        self.frame_queue = frame_queue
+        self.motion_signal = motion_signal
+        self.output_dir = Path(output_dir)
+        self.pre_motion_buffer_size = pre_motion_buffer * 10
+        self.post_motion_timeout = post_motion_timeout
+        self.max_storage_bytes = max_storage_gb * 1024 * 1024 * 1024
+        self.fb_manager = fb_manager
+        self.running = True
+        self.logger = logging.getLogger(__name__)
+        
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.logger.info(f"Recording directory: {self.output_dir}")
+        except Exception as e: 
+            self.logger.error(f"Failed to create recording directory: {e}")
+            raise
+
+    def _cleanup_old_recordings(self):
+        try:
+            files = sorted(self.output_dir.glob("*.mp4"), key=lambda x: x.stat().st_mtime)
+            total_size = sum(f.stat().st_size for f in files)
+            
+            while total_size > self.max_storage_bytes and files:
+                oldest = files.pop(0)
+                size = oldest.stat().st_size
+                self.logger.info(f"Deleting old recording: {oldest.name} ({size/1024/1024:.1f} MB)")
+                oldest.unlink()
+                total_size -= size
+                
+        except Exception as e: 
+            self.logger.error(f"Error cleaning up recordings: {e}")
+
+    def run(self):
+        self.logger.info("Motion-triggered recording thread started")
+        
+        circular_buffer = []
+        is_recording = False
+        out = None
+        filepath = None
+        start_time = None
+        frame_count = 0
+        motion_event_count = 0
+        
+        while self.running:
+            try:
+                frame = self.frame_queue.get(timeout=1)
+                
+                circular_buffer.append(frame.copy())
+                if len(circular_buffer) > self.pre_motion_buffer_size:
+                    circular_buffer.pop(0)
+                
+                motion_detected = self.motion_signal.get('detected', False)
+                last_motion_time = self.motion_signal.get('last_time', 0)
+                time_since_motion = time.time() - last_motion_time
+                
+                if motion_detected and not is_recording:
+                    self.logger.info("Motion detected!  Starting recording...")
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"motion_{timestamp}.mp4"
+                    filepath = self.output_dir / filename
+                    
+                    height, width = frame.shape[:2]
+                    fps = 10.0
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    out = cv2.VideoWriter(str(filepath), fourcc, fps, (width, height))
+                    
+                    if not out.isOpened():
+                        self.logger.error(f"Failed to create video writer:  {filepath}")
+                        continue
+                    
+                    for buffered_frame in circular_buffer: 
+                        out.write(buffered_frame)
+                        frame_count += 1
+                    
+                    is_recording = True
+                    start_time = time.time()
+                    motion_event_count = 1
+                    
+                    self.logger.info(f"Recording to:  {filename} (with {len(circular_buffer)} pre-buffered frames)")
+                
+                if is_recording:
+                    out.write(frame)
+                    frame_count += 1
+                    
+                    if motion_detected:
+                        motion_event_count += 1
+                    
+                    if time_since_motion > self.post_motion_timeout:
+                        duration = time.time() - start_time
+                        out.release()
+                        
+                        size_mb = filepath.stat().st_size / 1024 / 1024
+                        
+                        self.logger.info(f"Recording completed: {filepath.name}")
+                        self.logger.info(f"   Duration: {duration:.1f}s, Frames: {frame_count}, Size: {size_mb:.1f}MB, Motion events: {motion_event_count}")
+                        
+                        if self.fb_manager:
+                            try:
+                                self.fb_manager.log_recording(filepath.name, duration, size_mb, motion_event_count)
+                            except Exception as e: 
+                                self.logger.error(f"Failed to log recording: {e}")
+                        
+                        self._cleanup_old_recordings()
+                        
+                        is_recording = False
+                        out = None
+                        frame_count = 0
+                        motion_event_count = 0
+                        
+            except queue.Empty:
+                continue
+            except Exception as e: 
+                self.logger.error(f"Error in motion recorder:  {e}")
+                if out:
+                    out.release()
+                is_recording = False
+        
+        if out:
+            out.release()
+        self.logger.info("MotionRecorder stopped")
 
     def stop(self):
         self.running = False
@@ -207,7 +336,7 @@ class StrictMatcher:
         per_user:  Dict[str, float] = {}
         for dist, uid in zip(d, self.enc_users):
             v = float(dist)
-            if uid not in per_user or v < per_user[uid]:  
+            if uid not in per_user or v < per_user[uid]: 
                 per_user[uid] = v
         items = sorted(per_user.items(), key=lambda x: x[1])
         best_uid, best_d = items[0]
@@ -218,17 +347,13 @@ class StrictMatcher:
         return best_uid, self.cache.get(best_uid, best_uid), conf
 
 class FaceApp:
-    def __init__(self):
+    def __init__(self, enable_recording=True):
         self.stream = "http://cameraiuh.local/stream"
         self.fb = FirebaseManager()
         self.fb.load_all_faces()
         self.matcher = StrictMatcher(self.fb)
         
-        self.motion_signal = {
-            'detected': False, 
-            'last_time': 0.0,
-            'source': None  # 'esp32' or 'face_detected'
-        }
+        self.motion_signal = {'detected': False, 'last_time': 0.0}
         
         self.mqtt = MQTTManager()
         self.mqtt.on_motion_callback = self._on_motion_detected
@@ -244,6 +369,20 @@ class FaceApp:
         )
         self.reader.start()
 
+        self.recorder = None
+        if enable_recording:
+            self.recorder = MotionRecorder(
+                frame_queue=self.q,
+                motion_signal=self.motion_signal,
+                output_dir="/home/camera/recordings",
+                pre_motion_buffer=30,
+                post_motion_timeout=10,
+                max_storage_gb=50,
+                fb_manager=self.fb
+            )
+            self.recorder.start()
+            logging.info("Motion-triggered recording enabled")
+
         self.min_face = 48
         self.upsample_fast, self.upsample_boost = 0, 1
         self.boost_interval, self.last_boost = 2.0, 0.0
@@ -255,11 +394,9 @@ class FaceApp:
         self.ui_fps, self.t_last = 0.0, time.time()
 
     def _on_motion_detected(self):
-        """Called when ESP32 LD2410C detects motion"""
         self.motion_signal['detected'] = True
         self.motion_signal['last_time'] = time.time()
-        self.motion_signal['source'] = 'esp32'
-        logging.info("?? Motion from ESP32 LD2410C")
+        logging.info("Motion signal received from ESP32 via MQTT")
 
     def _detect(self, rgb):
         loc = face_recognition.face_locations(rgb, self.upsample_fast, "hog")
@@ -285,7 +422,7 @@ class FaceApp:
                 except queue.Empty:
                     no_frame_count += 1
                     
-                    if no_frame_count >= max_no_frame:  
+                    if no_frame_count >= max_no_frame: 
                         logging.warning("No frames received. Stream may be disconnected.")
                         no_frame_count = 0
                     
@@ -298,25 +435,18 @@ class FaceApp:
                     continue
 
                 now = time.time()
-                if now - self.t_last > 0:  
+                if now - self.t_last > 0: 
                     self.ui_fps = 0.9*self.ui_fps + 0.1*(1.0/(now - self.t_last))
                 self.t_last = now
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 boxes = self._detect(rgb)
 
-                # ? Face detection triggers motion signal (low priority)
                 if boxes:
-                    if self.motion_signal['source'] != 'esp32' or \
-                       (time.time() - self.motion_signal['last_time']) > 5.0:
-                        self.motion_signal['detected'] = True
-                        self.motion_signal['last_time'] = time.time()
-                        self.motion_signal['source'] = 'face_detected'
-                
-                # Motion expires after 10s
-                if (time.time() - self.motion_signal['last_time']) > 10:
+                    self.motion_signal['detected'] = True
+                    self.motion_signal['last_time'] = time.time()
+                else:
                     self.motion_signal['detected'] = False
-                    self.motion_signal['source'] = None
 
                 if boxes:
                     encs = face_recognition.face_encodings(rgb, boxes, num_jitters=1)
@@ -326,25 +456,15 @@ class FaceApp:
                         cv2.rectangle(frame, (l,t), (r,b), color, 2)
                         cv2.putText(frame, f"{label} ({conf:.2f})", (l+5, b+20),
                                     cv2.FONT_HERSHEY_DUPLEX, 0.6, (255,255,255), 1)
-                        
-                        # ? Publish family detection to ESP32
-                        if uid:  
+                        if uid: 
                             ts = time.time()
-                            if (ts - self.last_seen.get(uid, 0.0) >= self.min_gap) and \
-                               (ts - self.last_pub >= self.pub_cooldown):
-                                
-                                self.mqtt.publish("security/camera/family_detected", {
-                                    "user_name": label, 
-                                    "user_id": uid, 
-                                    "confidence":  conf,
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                                
+                            if (ts - self.last_seen.get(uid, 0.0) >= self.min_gap) and (ts - self.last_pub >= self.pub_cooldown):
+                                self.fb.log_recognition(uid, label, conf, "RPi4")
+                                self.mqtt.publish("security/camera/family_detected",
+                                                  {"user_name": label, "user_id": uid, "confidence": conf})
                                 self.last_seen[uid] = ts
                                 self.last_pub = ts
-                                logging.info(f"?? Family detected: {label} (conf:  {conf:.2f})")
 
-                # ? UI Display
                 status_color = (0, 255, 0) if self.reader.cap and self.reader.cap.isOpened() else (0, 0, 255)
                 status_text = "CONNECTED" if status_color == (0, 255, 0) else "DISCONNECTED"
                 
@@ -353,19 +473,22 @@ class FaceApp:
                 cv2.putText(frame, status_text, (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
                 
-                # Motion status
-                if self.motion_signal['detected']:
-                    source = self.motion_signal['source'] or ''
-                    motion_text = f"MOTION ({source})"
-                    motion_color = (0, 0, 255)
-                else:
-                    motion_text = "IDLE"
-                    motion_color = (128, 128, 128)
+                if self.recorder:
+                    if self.motion_signal['detected']:
+                        rec_status = "REC"
+                        rec_color = (0, 0, 255)
+                    else:
+                        time_since = time.time() - self.motion_signal['last_time']
+                        if time_since < self.recorder.post_motion_timeout:
+                            rec_status = f"REC ({int(self.recorder.post_motion_timeout - time_since)}s)"
+                            rec_color = (0, 255, 255)
+                        else:
+                            rec_status = "IDLE"
+                            rec_color = (128, 128, 128)
+                    
+                    cv2.putText(frame, rec_status, (10, 90),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, rec_color, 2)
                 
-                cv2.putText(frame, motion_text, (10, 90),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, motion_color, 2)
-                
-                # MQTT status
                 mqtt_color = (0, 255, 0) if self.mqtt.connected else (0, 0, 255)
                 mqtt_status = "MQTT:  OK" if self.mqtt.connected else "MQTT: OFF"
                 cv2.putText(frame, mqtt_status, (10, 120),
@@ -383,15 +506,17 @@ class FaceApp:
     def stop(self):
         logging.info("Stopping all threads...")
         self.reader.stop()
+        if self.recorder:
+            self.recorder.stop()
         self.mqtt.close()
         cv2.destroyAllWindows()
         logging.info("All threads stopped")
 
-if __name__ == "__main__":  
+if __name__ == "__main__": 
     logging.basicConfig(
         level=logging.INFO, 
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
     
-    app = FaceApp()
+    app = FaceApp(enable_recording=True)
     app.start()
