@@ -8,8 +8,13 @@ from firebase_manager import FirebaseManager
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
+import warnings
+
 cv2.setUseOptimized(True)
 cv2.setNumThreads(2)
+
+os.environ['OPENCV_FFMPEG_LOGLEVEL'] = '-8' 
+warnings.filterwarnings('ignore')
 
 class MQTTManager:
     def __init__(self, host="camera-monitor.local", port=1883, user="minhtri6090", password="123"):
@@ -190,13 +195,13 @@ class FrameReader(threading.Thread):
         self.running = False
 
 class MotionRecorder(threading.Thread):
-    def __init__(self, frame_queue, motion_signal, output_dir="/home/camera/recordings",
-                 pre_motion_buffer=30, post_motion_timeout=10, max_storage_gb=50, fb_manager=None):
+    def __init__(self, frame_queue, motion_signal, output_dir="/home/camera/recordingss",
+                 pre_motion_buffer=10, post_motion_timeout=10, max_storage_gb=50, fb_manager=None):
         super().__init__(daemon=True)
         self.frame_queue = frame_queue
         self.motion_signal = motion_signal
         self.output_dir = Path(output_dir)
-        self.pre_motion_buffer_size = pre_motion_buffer * 10
+        self.pre_motion_buffer_size = pre_motion_buffer * 10  # 10 FPS ? frames
         self.post_motion_timeout = post_motion_timeout
         self.max_storage_bytes = max_storage_gb * 1024 * 1024 * 1024
         self.fb_manager = fb_manager
@@ -206,7 +211,7 @@ class MotionRecorder(threading.Thread):
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             self.logger.info(f"Recording directory: {self.output_dir}")
-        except Exception as e: 
+        except Exception as e:  
             self.logger.error(f"Failed to create recording directory: {e}")
             raise
 
@@ -218,11 +223,11 @@ class MotionRecorder(threading.Thread):
             while total_size > self.max_storage_bytes and files:
                 oldest = files.pop(0)
                 size = oldest.stat().st_size
-                self.logger.info(f"Deleting old recording: {oldest.name} ({size/1024/1024:.1f} MB)")
+                self.logger.info(f"Deleting old recording: {oldest. name} ({size/1024/1024:. 1f} MB)")
                 oldest.unlink()
                 total_size -= size
                 
-        except Exception as e: 
+        except Exception as e:  
             self.logger.error(f"Error cleaning up recordings: {e}")
 
     def run(self):
@@ -264,7 +269,7 @@ class MotionRecorder(threading.Thread):
                         self.logger.error(f"Failed to create video writer:  {filepath}")
                         continue
                     
-                    for buffered_frame in circular_buffer: 
+                    for buffered_frame in circular_buffer:  
                         out.write(buffered_frame)
                         frame_count += 1
                     
@@ -272,30 +277,24 @@ class MotionRecorder(threading.Thread):
                     start_time = time.time()
                     motion_event_count = 1
                     
-                    self.logger.info(f"Recording to:  {filename} (with {len(circular_buffer)} pre-buffered frames)")
+                    self.logger. info(f"Recording to: {filename} (with {len(circular_buffer)} pre-buffered frames)")
+                
+                elif motion_detected and is_recording:  
+                    motion_event_count += 1
                 
                 if is_recording:
                     out.write(frame)
                     frame_count += 1
-                    
-                    if motion_detected:
-                        motion_event_count += 1
-                    
+
                     if time_since_motion > self.post_motion_timeout:
                         duration = time.time() - start_time
                         out.release()
                         
-                        size_mb = filepath.stat().st_size / 1024 / 1024
+                        size_mb = filepath. stat().st_size / 1024 / 1024
                         
-                        self.logger.info(f"Recording completed: {filepath.name}")
+                        self.logger.info(f"Recording completed: {filepath. name}")
                         self.logger.info(f"   Duration: {duration:.1f}s, Frames: {frame_count}, Size: {size_mb:.1f}MB, Motion events: {motion_event_count}")
-                        
-                        if self.fb_manager:
-                            try:
-                                self.fb_manager.log_recording(filepath.name, duration, size_mb, motion_event_count)
-                            except Exception as e: 
-                                self.logger.error(f"Failed to log recording: {e}")
-                        
+
                         self._cleanup_old_recordings()
                         
                         is_recording = False
@@ -305,9 +304,9 @@ class MotionRecorder(threading.Thread):
                         
             except queue.Empty:
                 continue
-            except Exception as e: 
-                self.logger.error(f"Error in motion recorder:  {e}")
-                if out:
+            except Exception as e:  
+                self.logger.error(f"Error in motion recorder: {e}")
+                if out: 
                     out.release()
                 is_recording = False
         
@@ -359,7 +358,7 @@ class FaceApp:
         self.mqtt.on_motion_callback = self._on_motion_detected
         self.mqtt.connect()
 
-        self.q = queue.Queue(maxsize=2)
+        self.q = queue.Queue(maxsize=4)
         
         self.reader = FrameReader(
             self.stream, 
@@ -374,8 +373,8 @@ class FaceApp:
             self.recorder = MotionRecorder(
                 frame_queue=self.q,
                 motion_signal=self.motion_signal,
-                output_dir="/home/camera/recordings",
-                pre_motion_buffer=30,
+                output_dir="/home/camera/recordingss",
+                pre_motion_buffer=10,
                 post_motion_timeout=10,
                 max_storage_gb=50,
                 fb_manager=self.fb
@@ -459,7 +458,6 @@ class FaceApp:
                         if uid: 
                             ts = time.time()
                             if (ts - self.last_seen.get(uid, 0.0) >= self.min_gap) and (ts - self.last_pub >= self.pub_cooldown):
-                                self.fb.log_recognition(uid, label, conf, "RPi4")
                                 self.mqtt.publish("security/camera/family_detected",
                                                   {"user_name": label, "user_id": uid, "confidence": conf})
                                 self.last_seen[uid] = ts
