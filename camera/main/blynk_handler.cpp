@@ -2,8 +2,6 @@
 #define BLYNK_TEMPLATE_NAME "ESP32S3"
 #define BLYNK_AUTH_TOKEN "Vqm7rUR3VZoz_tZBlEXJ8w2cbQ4YnDUt"
 
-#define BLYNK_PRINT Serial
-
 #include "blynk_handler.h"
 #include "wifi_manager.h"
 #include "security_system.h"
@@ -12,7 +10,7 @@
 Servo servo1, servo2;
 
 int servo1Angle = 90;
-int servo2Angle = 134;
+int servo2Angle = 138;
 
 volatile bool holdServo1Left = false;
 volatile bool holdServo1Right = false;
@@ -21,7 +19,7 @@ volatile bool holdServo2Up = false;
 
 const int MIN_ANGLE = 0;
 const int MAX_ANGLE = 180;
-const int SERVO_STEP = 4;
+const int SERVO_STEP = 2;
 const int SERVO_SPEED_MS = 60;
 
 BlynkTimer servoTimer;
@@ -85,7 +83,7 @@ void updateServoPositions() {
 
 void moveServoToCenter() {
     servo1Angle = 90;
-    servo2Angle = 134;
+    servo2Angle = 138;
     
     servo1.write(servo1Angle);
     servo2.write(servo2Angle);

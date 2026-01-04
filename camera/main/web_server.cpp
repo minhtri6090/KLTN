@@ -47,11 +47,10 @@ void stream_task(void *pvParameters)
 
             if (frameBuffer && frameLen > 0) 
             {
-                String boundary = "--frame\r\n";
-                boundary += "Content-Type: image/jpeg\r\n";
-                boundary += "Content-Length: " + String(frameLen) + "\r\n\r\n";
-                client.print(boundary);
+                client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", frameLen);
+
                 client.write(frameBuffer, frameLen);
+
                 client.print("\r\n");
                 lastFrameTime = millis();
 
@@ -71,11 +70,9 @@ void stream_task(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 
-    // ✅ CLEANUP AN TOÀN HƠN
     Serial.printf("[TASK] Client %s disconnected, cleaning up\n", client.remoteIP(). toString().c_str());
     client.stop();
-    
-    // ✅ DÙNG CRITICAL SECTION KHI CẬP NHẬT ARRAY
+
     portENTER_CRITICAL(&frameMux);
     TaskHandle_t current = xTaskGetCurrentTaskHandle();
     for (int i = 0; i < MAX_CLIENTS; i++) 
@@ -94,7 +91,17 @@ void stream_task(void *pvParameters)
 
 void handle_stream() {
     Serial.println("[STREAM] Client requesting stream");
-    startStream();
+    if (!uvcStarted || uvc == nullptr) {
+        Serial.println("[STREAM] ERROR: Camera not started!");
+        server.send(503, "text/plain", "Camera not ready");
+        return;
+    }
+
+    if (clientQueue == NULL) {
+        Serial.println("[STREAM] ERROR: Client queue not initialized!");
+        server.send(503, "text/plain", "Stream not initialized");
+        return;
+    }
 
     WiFiClient client = server.client();
     if (!client.connected()) {
@@ -131,8 +138,7 @@ void startMJPEGStreamingServer()
         Serial.println("[SERVER] Server already running");
         return;
     }
-    
-    clientQueue = xQueueCreate(MAX_CLIENTS, sizeof(stream_client_t*));
+
     if (clientQueue == NULL) 
     {
         Serial.println("[SERVER] Failed to create client queue");
@@ -1003,20 +1009,11 @@ void handleNotFound()
     server.send(404, "text/plain", "Not Found");
 }
 
-void stopWebServer() {
+void stopWebServer() 
+{
     if (serverRunning) {
         server.stop();
         serverRunning = false;
     }
 }
 
-void restartWebServer() {
-    stopWebServer();
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    
-    if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
-        startAPWebServer();
-    } else if (WiFi.getMode() == WIFI_STA) {
-        startMJPEGStreamingServer();
-    }
-}

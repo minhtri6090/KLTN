@@ -160,7 +160,7 @@ void connectWiFiSTA(String ssid, String password)
 void handleSuccessfulConnection() 
 {
     Serial.println("[WIFI] Connected");
-    Serial.printf("[WIFI] IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] IP:  %s\n", WiFi. localIP().toString().c_str());
     
     connecting = false;
     connectionAttempts = 0;
@@ -171,11 +171,12 @@ void handleSuccessfulConnection()
 
     initializeMDNS();
 
+    startStream();  
+    vTaskDelay(pdMS_TO_TICKS(300)); // Đợi camera sẵn sàng
     startMJPEGStreamingServer();
-    startStream();
     
     extern bool servoInitialized;
-    if (!servoInitialized) 
+    if (! servoInitialized) 
     {
         initializeBlynk();
     } 

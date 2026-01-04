@@ -51,21 +51,27 @@ void initSIM()
     }
 }
 
-bool sendCommand(const char* command, const char* expectedResponse, unsigned long timeout) {
+bool sendCommand(const char* command, const char* expectedResponse, unsigned long timeout) 
+{
     simSerial.println(command);
     
     unsigned long startTime = millis();
     String response = "";
 
-    if (simSerial.available()) {
-        char c = simSerial.read();
-        response += c;
-        
-        if (response.indexOf(expectedResponse) >= 0) {
-            return true;
+    while ((millis() - startTime) < timeout) 
+    {
+
+        while (simSerial.available()) 
+        {
+            char c = simSerial.read();
+            response += c;
+        }
+
+        if (response.indexOf(expectedResponse) >= 0) 
+        {
+            return true; 
         }
     }
-    
     return false;
 }
 
@@ -217,7 +223,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
         StaticJsonDocument<300> doc;
         DeserializationError error = deserializeJson(doc, message);
         
-        if (!error) {
+        if (!error) 
+        {
             const char* user_name = doc["user_name"] | "Unknown";
             float confidence = doc["confidence"] | 0.0;
             
@@ -373,7 +380,7 @@ void onFamilyMemberDetected() {
     
     resetSecurityState();
     
-    publishMQTTStatus("Family confirmed - system disarmed");
+    publishMQTTStatus("Family confirmed");
 }
 
 void resetSecurityState() {
@@ -399,9 +406,9 @@ void checkSecurityTimers()
     unsigned long currentTime = millis();
     unsigned long elapsedTime = currentTime - motionDetectedTime;
     unsigned long timeSinceLastMotion = currentTime - lastMotionSeenTime;
-    
-    // ✅ Auto reset nếu không motion > 20s (chỉ còn backup, vì đã tắt ở onMotionEnded)
-    if (timeSinceLastMotion >= AUTO_RESET_NO_MOTION) {
+
+    if (timeSinceLastMotion >= AUTO_RESET_NO_MOTION) 
+    {
         Serial.println("\n[SECURITY] No motion > 20s - Auto reset");
         
         sendNodeCommand("buzzer", "off");

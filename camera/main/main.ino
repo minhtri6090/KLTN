@@ -46,7 +46,7 @@ void loop()
         vTaskDelay(pdMS_TO_TICKS(200));
         playAudio(AUDIO_HELLO);
         
-        sdAudioInitialized = true;
+                sdAudioInitialized = true;
         welcomeAudioPlayed = true;
         return;
     }

@@ -48,8 +48,7 @@
 #define LED_PIN 6              // IR LED
 #define FLASH_LED_PIN  5      // Flash LED
 
-// ✅ Cấu hình LDR (đơn giản)
-#define LDR_DARK_THRESHOLD 100   // < 400 = tối
+#define LDR_DARK_THRESHOLD 150   
 #define LDR_READ_INTERVAL 1000   // Đọc mỗi 1s
 
 #define AUDIO_HELLO                0  

@@ -125,62 +125,89 @@ void clientProcessorTask(void *pvParameters)
 
 void startStream() 
 {
-    if(!uvcStarted) 
+    if(! uvcStarted) 
     {
+        Serial.println("[CAMERA] Starting USB camera");
         uvc->start();
         uvcStarted = true;
+        vTaskDelay(pdMS_TO_TICKS(500)); // Đợi camera init đầy đủ
+    } 
+    else 
+    {
+        Serial.println("[CAMERA] Camera already running");
+    }
+
+    if (clientQueue == NULL) 
+    {
+        Serial.println("[CAMERA] Creating client queue");
+        clientQueue = xQueueCreate(MAX_CLIENTS, sizeof(stream_client_t*));
+        
+        if (clientQueue == NULL) 
+        {
+            Serial.println("[CAMERA] ERROR: Failed to create queue!");
+            return;
+        }
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; i++) 
+    {
+        streamTaskHandle[i] = NULL;
+    }
+
+    if (clientProcessorHandle == NULL) 
+    {
+        Serial.println("[CAMERA] Creating client processor task");
+        BaseType_t result = xTaskCreatePinnedToCore(
+            clientProcessorTask, 
+            "ClientProcessor", 
+            4096, 
+            NULL, 
+            3, 
+            &clientProcessorHandle, 
+            1
+        );
+        
+        if (result != pdPASS) {
+            Serial.println("[CAMERA] ERROR: Failed to create processor task!");
+            return;
+        }
     }
     
-    if (!streaming_started) 
-    {
-        clientQueue = xQueueCreate(MAX_CLIENTS, sizeof(stream_client_t*));
-        for (int i = 0; i < MAX_CLIENTS; i++) streamTaskHandle[i] = NULL;
-        
-        xTaskCreatePinnedToCore(clientProcessorTask, "ClientProcessor", 4096, NULL, 3, &clientProcessorHandle, 1);
-        streaming_started = true;
-    }
+    streaming_started = true;
+    Serial.println("[CAMERA] Stream started successfully");
 }
 
 void stopStream() {
-    if (!streaming_started) return;
+    if (! streaming_started) return;
     
     Serial.println("[CAMERA] Stopping stream");
-    
-    if(uvcStarted && uvc != nullptr) {
-        uvc->stop();
-        uvcStarted = false; 
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    
+
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (streamTaskHandle[i] != NULL) {
             vTaskDelete(streamTaskHandle[i]);
             streamTaskHandle[i] = NULL;
         }
     }
-    
+
     if (clientProcessorHandle != NULL) {
         vTaskDelete(clientProcessorHandle);
         clientProcessorHandle = NULL;
     }
-    
+
     if (clientQueue != NULL) {
         stream_client_t* streamClient;
-        while(xQueueReceive(clientQueue, &streamClient, pdMS_TO_TICKS(100)) == pdTRUE) 
+        while(xQueueReceive(clientQueue, &streamClient, 0) == pdTRUE) 
         {
             if (streamClient != nullptr) {
-                streamClient->client.flush();      // Flush trước
-                streamClient->client.stop();
-                vTaskDelay(pdMS_TO_TICKS(10));    // Đợi close hoàn toàn
+                streamClient->client. stop();
                 delete streamClient;
-                streamClient = nullptr;
             }
         }
         
         vQueueDelete(clientQueue);
         clientQueue = NULL;
     }
-    
+
     portENTER_CRITICAL(&frameMux);
     frame_ready_a = false;
     frame_ready_b = false;
@@ -188,5 +215,5 @@ void stopStream() {
     portEXIT_CRITICAL(&frameMux);
     
     streaming_started = false;
-    Serial.println("[CAMERA] Stream stopped");
+    Serial.println("[CAMERA] Stream stopped completely");
 }

@@ -22,7 +22,7 @@
 
 #define OWNER_SMS_BUZZER_DELAY   20000
 #define NEIGHBOR_SMS_LOCK_DELAY  40000
-#define AUTO_RESET_NO_MOTION     20000
+#define AUTO_RESET_NO_MOTION     5000
 
 enum SecurityState {
     SECURITY_IDLE = 0,

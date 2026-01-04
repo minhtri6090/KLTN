@@ -67,7 +67,7 @@ void readLDRSensor()
     if (flashIgnoreUntil != 0 && now < flashIgnoreUntil) 
     {
         // Vẫn cập nhật ldrValue để debug/hiển thị nếu cần, nhưng không thay đổi state isDark
-        ldrValue = analogRead(LDR_PIN);
+        ldrValue = analogRead(LDR_PIN);//
         // Log 1 lần khi bắt đầu ignore (giảm spam)
         static unsigned long lastIgnoreLog = 0;
         if (now - lastIgnoreLog > 2000) 
@@ -226,7 +226,7 @@ void handleMotionLoop()
                 
                 updateLEDsBasedOnConditions();
                 
-                //  GỌI HÀM TẮT BUZZER KHI MOTION END
+                // GỌI HÀM TẮT BUZZER KHI MOTION END
                 onMotionEnded();
             }
         }
